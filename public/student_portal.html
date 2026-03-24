@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Student Portal - AI Monitor</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body { font-family: sans-serif; text-align: center; background-color: #f4f4f9; padding: 20px; }
+        .box { background: white; padding: 25px; border-radius: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-width: 350px; margin: 40px auto; }
+        input { width: 100%; padding: 12px; margin: 10px 0; border: 1px solid #ccc; border-radius: 5px; font-size: 16px; box-sizing: border-box;}
+        button { padding: 15px; font-size: 18px; color: white; background: #007bff; border: none; border-radius: 5px; cursor: pointer; width: 100%; margin-top: 10px; transition: 0.3s; }
+        button:disabled { background: #ccc; }
+        button:hover:not(:disabled) { background: #0056b3; }
+        video { width: 100%; max-width: 400px; border-radius: 10px; border: 3px solid #ccc; background: #000; margin-top: 15px; }
+        .error { color: red; font-size: 14px; display: none; margin-top: 10px; }
+        .success { color: green; font-size: 14px; display: none; margin-top: 10px; }
+        .toggle-link { color: #007bff; text-decoration: none; font-weight: bold; cursor: pointer; }
+        .toggle-link:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+
+    <div id="authScreen" class="box">
+        <h2 id="authTitle">Student Login</h2>
+        
+        <div id="signupFields" style="display: none;">
+            <input type="text" id="nameInput" placeholder="Full Name">
+        </div>
+        
+        <input type="email" id="emailInput" placeholder="University Email">
+        
+        <div id="otpFields" style="display: none;">
+            <input type="text" id="otpInput" placeholder="Enter 6-Digit OTP" maxlength="6">
+        </div>
+        
+        <input type="password" id="passwordInput" placeholder="Password">
+        
+        <button id="authBtn">Login</button>
+        <button id="getOtpBtn" style="display: none; background: #28a745;">Get OTP</button>
+        
+        <p id="authError" class="error"></p>
+        <p id="authSuccess" class="success"></p>
+        
+        <div style="margin-top: 15px; font-size: 14px;">
+            <span id="toggleText">Don't have an account?</span> 
+            <a id="toggleAuthMode" class="toggle-link">Sign Up</a>
+        </div>
+    </div>
+
+    <div id="streamScreen" style="display: none;">
+        <h2>Welcome, <span id="studentNameDisplay"></span></h2>
+        
+        <video id="videoElement" autoplay playsinline muted></video>
+        <canvas id="canvasElement" style="display:none;"></canvas>
+        
+        <div class="box" style="margin-top: 20px; padding: 15px;">
+            <button id="connectBtn">Connect to Class</button>
+            <div id="statsBox" style="display:none; text-align: left; margin-top: 15px;">
+                <p><strong>Status:</strong> <span id="statusText" style="color: orange;">Connecting...</span></p>
+                <p><strong>Detected Emotion:</strong> <span id="emotionText">--</span></p>
+                <p><strong>Engagement:</strong> <span id="engagementText">--</span></p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // DOM Elements
+        const authScreen = document.getElementById('authScreen');
+        const streamScreen = document.getElementById('streamScreen');
+        
+        const authTitle = document.getElementById('authTitle');
+        const signupFields = document.getElementById('signupFields');
+        const otpFields = document.getElementById('otpFields');
+        const nameInput = document.getElementById('nameInput');
+        const emailInput = document.getElementById('emailInput');
+        const otpInput = document.getElementById('otpInput');
+        const passwordInput = document.getElementById('passwordInput');
+        const authBtn = document.getElementById('authBtn');
+        const getOtpBtn = document.getElementById('getOtpBtn');
+        const authError = document.getElementById('authError');
+        const authSuccess = document.getElementById('authSuccess');
+        const toggleText = document.getElementById('toggleText');
+        const toggleAuthMode = document.getElementById('toggleAuthMode');
+        
+        const studentNameDisplay = document.getElementById('studentNameDisplay');
+        const video = document.getElementById('videoElement');
+        const canvas = document.getElementById('canvasElement');
+        const ctx = canvas.getContext('2d');
+        const connectBtn = document.getElementById('connectBtn');
+        const statsBox = document.getElementById('statsBox');
+        
+        let isLoginMode = true;
+        let isOtpSent = false;
+        let ws;
+        let officialStudentId = ""; 
+        let localStream;
+        let recordingInterval;
+        let audioContext, processor, microphone, audioChunks = [];
+
+        function validateEmail(email) {
+            const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+            return re.test(email);
+        }
+
+        // --- Toggle Between Login and Sign Up ---
+        toggleAuthMode.addEventListener('click', () => {
+            isLoginMode = !isLoginMode;
+            authTitle.innerText = isLoginMode ? "Student Login" : "Create Account";
+            toggleText.innerText = isLoginMode ? "Don't have an account?" : "Already have an account?";
+            toggleAuthMode.innerText = isLoginMode ? "Sign Up" : "Log In"; 
+            
+            signupFields.style.display = isLoginMode ? "none" : "block";
+            otpFields.style.display = "none";
+            
+            if (isLoginMode) {
+                authBtn.style.display = "block";
+                authBtn.innerText = "Login";
+                getOtpBtn.style.display = "none";
+            } else {
+                authBtn.style.display = "none";
+                getOtpBtn.style.display = "block";
+                getOtpBtn.innerText = "Get OTP";
+            }
+            
+            isOtpSent = false;
+            authError.style.display = "none";
+            authSuccess.style.display = "none";
+        });
+
+        // --- Step 1: Request OTP ---
+        getOtpBtn.addEventListener('click', async () => {
+            if (!validateEmail(emailInput.value)) {
+                authError.innerText = "Please enter a valid email address.";
+                authError.style.display = "block";
+                return;
+            }
+            if (!nameInput.value || !passwordInput.value) {
+                authError.innerText = "Please fill in your name and password first.";
+                authError.style.display = "block";
+                return;
+            }
+
+            getOtpBtn.disabled = true;
+            getOtpBtn.innerText = "Sending...";
+            authError.style.display = "none";
+
+            try {
+                const response = await fetch('/request-otp', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email: emailInput.value })
+                });
+                const data = await response.json();
+
+                if (response.ok) {
+                    authSuccess.innerText = data.message;
+                    authSuccess.style.display = "block";
+                    getOtpBtn.style.display = "none";
+                    
+                    otpFields.style.display = "block";
+                    authBtn.style.display = "block";
+                    authBtn.innerText = "Verify & Register";
+                    isOtpSent = true;
+                } else {
+                    authError.innerText = data.detail;
+                    authError.style.display = "block";
+                    getOtpBtn.disabled = false;
+                    getOtpBtn.innerText = "Get OTP";
+                }
+            } catch (err) {
+                authError.innerText = "Server error requesting OTP.";
+                authError.style.display = "block";
+                getOtpBtn.disabled = false;
+                getOtpBtn.innerText = "Get OTP";
+            }
+        });
+
+        // --- Step 2: Login OR Verify OTP ---
+        authBtn.addEventListener('click', async () => {
+            if (!validateEmail(emailInput.value)) {
+                authError.innerText = "Please enter a valid email address.";
+                authError.style.display = "block";
+                return;
+            }
+
+            authBtn.disabled = true;
+            authBtn.innerText = "Processing...";
+            authError.style.display = "none";
+            authSuccess.style.display = "none";
+
+            const endpoint = isLoginMode ? '/login' : '/register';
+            const payload = { email: emailInput.value, password: passwordInput.value };
+            
+            if (!isLoginMode) {
+                payload.name = nameInput.value;
+                payload.otp = otpInput.value;
+            }
+
+            try {
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await response.json();
+
+                if (response.ok) {
+                    if (isLoginMode) {
+                        officialStudentId = data.student_id;
+                        studentNameDisplay.innerText = data.name;
+                        authScreen.style.display = "none";
+                        streamScreen.style.display = "block";
+                    } else {
+                        authSuccess.innerText = "Account created! You can now log in.";
+                        authSuccess.style.display = "block";
+                        setTimeout(() => toggleAuthMode.click(), 1500); // Auto-switch to login
+                    }
+                } else {
+                    authError.innerText = data.detail || "Authentication failed.";
+                    authError.style.display = "block";
+                }
+            } catch (err) {
+                authError.innerText = "Network Error.";
+                authError.style.display = "block";
+            }
+            authBtn.disabled = false;
+            authBtn.innerText = isLoginMode ? "Login" : "Verify & Register";
+        });
+
+        // --- Media and WebSocket Logic ---
+        connectBtn.addEventListener('click', async () => {
+            connectBtn.disabled = true;
+            connectBtn.innerText = "Accessing Camera & Mic...";
+            
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: true });
+                video.srcObject = localStream;
+                video.onloadedmetadata = () => {
+                    canvas.width = video.videoWidth;
+                    canvas.height = video.videoHeight;
+                    startWebSocket();
+                };
+            } catch (err) {
+                alert("Camera or Microphone access denied.");
+                connectBtn.disabled = false;
+                connectBtn.innerText = "Connect to Class";
+            }
+        });
+
+        function startWebSocket() {
+            const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+            const wsUrl = `${protocol}//${window.location.host}/ws/stream/${officialStudentId}`;
+            ws = new WebSocket(wsUrl);
+            
+            ws.onopen = () => {
+                statsBox.style.display = "block";
+                document.getElementById('statusText').innerText = "Streaming Multimodal Data";
+                document.getElementById('statusText').style.color = "green";
+                connectBtn.style.display = "none";
+                
+                try {
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    microphone = audioContext.createMediaStreamSource(localStream);
+                    processor = audioContext.createScriptProcessor(4096, 1, 1);
+                    let gainNode = audioContext.createGain();
+                    gainNode.gain.value = 0; 
+                    
+                    microphone.connect(processor);
+                    processor.connect(gainNode);
+                    gainNode.connect(audioContext.destination);
+                    
+                    processor.onaudioprocess = (e) => {
+                        let channelData = e.inputBuffer.getChannelData(0);
+                        audioChunks.push(new Float32Array(channelData));
+                    };
+
+                    recordingInterval = setInterval(() => {
+                        if (ws.readyState === WebSocket.OPEN && audioChunks.length > 0) {
+                            let totalLength = audioChunks.reduce((acc, val) => acc + val.length, 0);
+                            let samples = new Float32Array(totalLength);
+                            let offset = 0;
+                            for (let chunk of audioChunks) {
+                                samples.set(chunk, offset);
+                                offset += chunk.length;
+                            }
+                            audioChunks = []; 
+
+                            let wavBuffer = encodeWAV(samples, audioContext.sampleRate);
+                            let base64Audio = arrayBufferToBase64(wavBuffer);
+                            
+                            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                            const base64Image = canvas.toDataURL('image/jpeg', 0.7); 
+
+                            ws.send(JSON.stringify({ image_b64: base64Image, audio_b64: base64Audio }));
+                        }
+                    }, 1000);
+
+                } catch (err) {
+                    console.error("Mic failed, falling back to Video Only mode", err);
+                    recordingInterval = setInterval(() => {
+                        if (ws.readyState === WebSocket.OPEN) {
+                            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                            ws.send(JSON.stringify({
+                                image_b64: canvas.toDataURL('image/jpeg', 0.7),
+                                audio_b64: null
+                            }));
+                        }
+                    }, 1000);
+                }
+            };
+            
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                document.getElementById('emotionText').innerText = data.emotion;
+                document.getElementById('engagementText').innerText = `${data.engagement}% | Mic: ${data.audio_status}`;
+            };
+            
+            ws.onclose = () => {
+                clearInterval(recordingInterval);
+                if (processor) processor.disconnect();
+                if (microphone) microphone.disconnect();
+                document.getElementById('statusText').innerText = "Disconnected from Server";
+                document.getElementById('statusText').style.color = "red";
+            };
+        }
+
+        function encodeWAV(samples, sampleRate) {
+            let buffer = new ArrayBuffer(44 + samples.length * 2);
+            let view = new DataView(buffer);
+            let writeString = (view, offset, string) => {
+                for (let i = 0; i < string.length; i++) view.setUint8(offset + i, string.charCodeAt(i));
+            };
+            writeString(view, 0, 'RIFF');
+            view.setUint32(4, 36 + samples.length * 2, true);
+            writeString(view, 8, 'WAVE');
+            writeString(view, 12, 'fmt ');
+            view.setUint32(16, 16, true);
+            view.setUint16(20, 1, true);
+            view.setUint16(22, 1, true); 
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, sampleRate * 2, true);
+            view.setUint16(32, 2, true);
+            view.setUint16(34, 16, true);
+            writeString(view, 36, 'data');
+            view.setUint32(40, samples.length * 2, true);
+            let offset = 44;
+            for (let i = 0; i < samples.length; i++, offset += 2) {
+                let s = Math.max(-1, Math.min(1, samples[i]));
+                view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+            }
+            return buffer;
+        }
+
+        function arrayBufferToBase64(buffer) {
+            let binary = '';
+            let bytes = new Uint8Array(buffer);
+            for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+            return window.btoa(binary);
+        }
+    </script>
+</body>
+</html>

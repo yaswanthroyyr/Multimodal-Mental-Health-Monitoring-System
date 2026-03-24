@@ -1,0 +1,23 @@
+# Security
+.env
+
+# Python Virtual Environment
+emsVenv/
+venv/
+ENV/
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Temporary AI Processing Files
+temp_*.jpg
+temp_*.wav
+temp_*.webm
+
+# Archive & Local Test Media
+archive/
+data/raw_audio/
+data/raw_video/
+data/processed_tensors/
